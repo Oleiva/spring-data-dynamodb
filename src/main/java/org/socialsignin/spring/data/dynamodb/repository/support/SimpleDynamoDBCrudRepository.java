@@ -15,8 +15,11 @@
  */
 package org.socialsignin.spring.data.dynamodb.repository.support;
 
+import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBMapper.FailedBatch;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBScanExpression;
 import com.amazonaws.services.dynamodbv2.datamodeling.KeyPair;
+import com.amazonaws.services.dynamodbv2.model.WriteRequest;
+
 import org.socialsignin.spring.data.dynamodb.core.DynamoDBOperations;
 import org.socialsignin.spring.data.dynamodb.repository.DynamoDBCrudRepository;
 import org.springframework.dao.EmptyResultDataAccessException;
@@ -33,8 +36,6 @@ import java.util.stream.StreamSupport;
 /**
  * Default implementation of the
  * {@link org.springframework.data.repository.CrudRepository} interface.
- * 
- * @author Michael Lavelle
  * 
  * @param <T>
  *            the type of the entity to handle
@@ -63,7 +64,6 @@ public class SimpleDynamoDBCrudRepository<T, ID>
 		this.dynamoDBOperations = dynamoDBOperations;
 		this.domainType = entityInformation.getJavaType();
 		this.enableScanPermissions = enableScanPermissions;
-
 	}
 
 	@Override
@@ -118,11 +118,28 @@ public class SimpleDynamoDBCrudRepository<T, ID>
 		dynamoDBOperations.save(entity);
 		return entity;
 	}
+	
+	private <S extends T> Iterable<S> filterUnprocessedItems(Iterable<S> entities, List<FailedBatch> failedBatches) {
+		if (failedBatches.isEmpty()) {
+			return entities;
+		}
+		
+		List<WriteRequest> unprocessedItems = failedBatches.stream().flatMap(it -> it.getUnprocessedItems()
+				// here are only entities of one type thus the key of the map is the very same table
+				.values().stream())
+				.flatMap(List::stream).collect(Collectors.toList());
+		
+		//TODO there is no easy way to map back to the original items :(
+		return Collections.emptyList();
+	}
 
 	@Override
 	public <S extends T> Iterable<S> saveAll(Iterable<S> entities) {
-		dynamoDBOperations.batchSave(entities);
-		return entities;
+		
+		Assert.notNull(entities, "The given Iterable of entities not be null!");
+		List<FailedBatch> failedBatches = dynamoDBOperations.batchSave(entities);
+		
+		return filterUnprocessedItems(entities, failedBatches);
 	}
 
 	@Override
