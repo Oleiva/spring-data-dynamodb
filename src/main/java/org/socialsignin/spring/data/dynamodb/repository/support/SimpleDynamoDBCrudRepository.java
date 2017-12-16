@@ -20,17 +20,22 @@ import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBScanExpression;
 import com.amazonaws.services.dynamodbv2.datamodeling.KeyPair;
 import com.amazonaws.services.dynamodbv2.model.WriteRequest;
 
+import org.socialsignin.spring.data.dynamodb.core.BatchWriteException;
 import org.socialsignin.spring.data.dynamodb.core.DynamoDBOperations;
 import org.socialsignin.spring.data.dynamodb.repository.DynamoDBCrudRepository;
+import org.springframework.dao.DataAccessException;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.util.Assert;
 
 import java.util.Collections;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Queue;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
 /**
@@ -118,28 +123,36 @@ public class SimpleDynamoDBCrudRepository<T, ID>
 		dynamoDBOperations.save(entity);
 		return entity;
 	}
-	
-	private <S extends T> Iterable<S> filterUnprocessedItems(Iterable<S> entities, List<FailedBatch> failedBatches) {
-		if (failedBatches.isEmpty()) {
-			return entities;
-		}
-		
-		List<WriteRequest> unprocessedItems = failedBatches.stream().flatMap(it -> it.getUnprocessedItems()
-				// here are only entities of one type thus the key of the map is the very same table
-				.values().stream())
-				.flatMap(List::stream).collect(Collectors.toList());
-		
-		//TODO there is no easy way to map back to the original items :(
-		return Collections.emptyList();
-	}
 
+	/**
+	 * {@inheritDoc}
+	 * 
+	 * @throws BatchWriteException in case of an error during saving
+	 */
 	@Override
-	public <S extends T> Iterable<S> saveAll(Iterable<S> entities) {
+	public <S extends T> Iterable<S> saveAll(Iterable<S> entities) throws BatchWriteException, IllegalArgumentException {
 		
 		Assert.notNull(entities, "The given Iterable of entities not be null!");
 		List<FailedBatch> failedBatches = dynamoDBOperations.batchSave(entities);
 		
-		return filterUnprocessedItems(entities, failedBatches);
+		if (failedBatches.isEmpty()) {
+			// Happy path
+			return entities;
+		} else {
+			// Error handling:
+			Queue<Exception> allExceptions = failedBatches.stream()
+					.map(it ->it.getException())
+					.collect(Collectors.toCollection(LinkedList::new));
+			
+			// The first exception is hopefully the cause
+			Exception cause = allExceptions.poll();
+			DataAccessException e = new BatchWriteException("Saving of entities " + entities + " failed!", cause);
+			// and all other exceptions are 'just' follow-up exceptions
+			allExceptions.stream()
+				.forEach(e::addSuppressed);
+			
+			throw e;
+		}
 	}
 
 	@Override
